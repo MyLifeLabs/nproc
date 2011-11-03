@@ -1,0 +1,19 @@
+USE_OCAMLFIND = true
+BYTE_ENABLED = true
+OCAMLDEP_MODULES_ENABLED = false
+
+OCAMLPACKS = lwt.unix
+OCAMLFLAGS = -annot -g
+
+FILES[] =
+  nproc
+#procpool
+
+OCamlLibrary(nproc, $(FILES))
+OCamlProgram(test_nproc, $(FILES) test_nproc)
+
+.DEFAULT: nproc.cma nproc.cmxa test_nproc.opt
+
+.PHONY: clean
+clean:
+        rm -f *.o *.a *.cm* *~ *.annot *.run *.opt

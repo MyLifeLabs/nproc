@@ -1,0 +1,6 @@
+                                   Nproc
+
+                   Process pool implementation for OCaml
+
+A master process creates a pool of N processes. Tasks can be submitted
+as (f, x) and use one of the processes to compute and return (f x).
