@@ -7,10 +7,11 @@ OCAMLFLAGS = -annot -g
 
 FILES[] =
   nproc
-#procpool
+  procpool
 
 OCamlLibrary(nproc, $(FILES))
 OCamlProgram(test_nproc, $(FILES) test_nproc)
+OCamlProgram(test_lwt, $(FILES) test_lwt)
 
 .DEFAULT: nproc.cma nproc.cmxa test_nproc.opt
 

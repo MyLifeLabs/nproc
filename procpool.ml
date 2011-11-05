@@ -1,3 +1,10 @@
+open Printf
+
+let log_error = ref (fun s -> eprintf "[err] %s\n%!" s)
+let log_info = ref (fun s -> eprintf "[info] %s\n%!" s)
+let string_of_exn = ref Printexc.to_string
+
+
 module Full =
 struct
   type worker = {
@@ -6,13 +13,13 @@ struct
     worker_out : Lwt_unix.file_descr;
   }
 
-  type ('a, 'b) from_worker =
-      Central_req of 'a
-    | Worker_res of 'b
+  type ('b, 'c) from_worker =
+      Worker_res of 'b
+    | Central_req of 'c
 
-  type ('a, 'b) to_worker =
-      Central_res of 'a
-    | Worker_req of 'b
+  type ('a, 'b, 'c, 'd, 'e) to_worker =
+      Worker_req of (('c -> 'd) -> 'e -> 'a -> 'b) * 'a
+    | Central_res of 'd
 
   (* --worker-- *)
   (* executed in worker processes right after the fork or in 
@@ -33,7 +40,7 @@ struct
     done
 
   (* --worker-- *)
-  let start_worker_loop worker_service fd_in fd_out =
+  let start_worker_loop worker_data fd_in fd_out =
     let ic = Unix.in_channel_of_descr fd_in in
     let oc = Unix.out_channel_of_descr fd_out in
     let central_service x =
@@ -47,7 +54,7 @@ struct
       let result =
         try
           match Marshal.from_channel ic with
-              Worker_req x -> worker_service central_service x
+              Worker_req (f, x) -> f central_service worker_data x
             | Central_res _ -> assert false
         with
             End_of_file ->
@@ -65,12 +72,18 @@ struct
       (Lwt_io.write_value oc ~flags:[Marshal.Closures] x)
       (fun () -> Lwt_io.flush oc)
 
+  type in_t = Obj.t
+  type out_t = Obj.t
+
   type ('a, 'b, 'c) t = {
     stream :
-      'd. ((('a -> 'b) -> 'c -> 'd) * ('d -> unit)) Lwt_stream.t;
+      ((('a -> 'b) -> 'c -> in_t -> out_t) * in_t * (out_t -> unit))
+         Lwt_stream.t;
     push :
-      'd. (((('a -> 'b) -> 'c -> 'd) * ('d -> unit)) option -> unit);
-    close : unit -> unit;
+      (((('a -> 'b) -> 'c -> in_t -> out_t) * in_t * (out_t -> unit))
+         option -> unit);
+    close : unit -> unit Lwt.t;
+    closed : bool ref;
   }
 
   (* --master-- *)
@@ -93,7 +106,9 @@ struct
       Lwt.bind (Lwt_io.read_value ic) (handle_input g)
         
     and handle_input g = function
-        Worker_res result -> Lwt.bind (g result) pull
+        Worker_res result ->
+          g result;
+          pull ()
       | Central_req x ->
           Lwt.bind (central_service x) (
             fun y ->
@@ -120,8 +135,8 @@ struct
                  cleanup_proc_pool proc_pool;
                  start_worker_loop worker_data out_read in_write;
                with e ->
-                 Log.logf `Crit "Uncaught exception in worker (pid %i): %s"
-                   (Unix.getpid ()) (Exn.to_string e);
+                 !log_error (sprintf "Uncaught exception in worker (pid %i): %s"
+                               (Unix.getpid ()) (!string_of_exn e));
                  exit 1
               )
           | child_pid ->
@@ -152,41 +167,58 @@ struct
            worker_info)
     in
 
-    let closed = ref false in
-
-    let close () =
-      if not !closed then (
-        Array.iter (
-          function
-              None -> ()
-            | Some x ->
-                (try close_worker x with _ -> ());
-                (try Unix.kill x.worker_pid Sys.sigkill with _ -> ())
-        ) proc_pool;
-        closed := true
-      )
+    let terminate () =
+      Array.iter (
+        function
+            None -> ()
+          | Some x ->
+              (try close_worker x with _ -> ());
+              (try Unix.kill x.worker_pid Sys.sigkill with _ -> ())
+      ) proc_pool
     in
 
+    let closed = ref false in
+
+    let close_stream () =
+      if not !closed then (
+        push None;
+        closed := true;
+        Lwt.bind jobs (fun () -> Lwt.return (terminate ()))
+      )
+      else
+        Lwt.return ()
+    in
+    
     let p = {
       stream = in_stream;
       push = push;
-      close = close;
+      close = close_stream;
+      closed = closed;
     }
     in
-    Lwt.bind jobs (fun () -> Lwt.return p)
+    p, jobs
 
   let close p =
     p.close ()
 
-  let submit p f g x =
-    p.push p.stream (Some (f, x, g))
+  let submit p f x =
+    if !(p.closed) then
+      Lwt.fail (Failure
+                  ("Cannot submit task to process pool because it is closed"))
+    else
+      let waiter, wakener = Lwt.task () in
+      let handle_result y = Lwt.wakeup wakener y in
+      p.push (Some (Obj.magic f, Obj.magic x, Obj.magic handle_result));
+      waiter
 end
 
 
 type t = (unit, unit, unit) Full.t
 
 let create n =
-  Full.create n (fun () -> Lwt.return ())
+  Full.create n (fun () -> Lwt.return ()) ()
 
-let submit p f g x =
-  Full.submit p (fun _ x -> f x) g x
+let close = Full.close
+
+let submit p f x =
+  Full.submit p (fun _ _ x -> f x) x

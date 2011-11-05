@@ -1,8 +1,13 @@
 type t
-val create : int -> t Lwt.t
-val close : t -> unit
-val submit : t -> ('a -> 'b) -> ('b -> unit) -> 'a -> unit
+val create : int -> t * unit Lwt.t
+val close : t -> unit Lwt.t
+val submit : t -> ('a -> 'b) -> 'a -> 'b Lwt.t
 
+val log_error : (string -> unit) ref
+val log_info : (string -> unit) ref
+val string_of_exn : (exn -> string) ref
+
+(*
 module Full :
 sig
   type ('central_request, 'central_response, 'worker_data) t
@@ -13,7 +18,7 @@ sig
     'worker_data ->
     ('central_request, 'central_response, 'worker_data) t
 
-  val close : ('central_request, 'central_response, 'worker_data) t -> unit
+  val close : ('central_request, 'central_response, 'worker_data) t -> unit Lwt.t
 
   val submit :
     ('central_request, 'central_response, 'worker_data) t ->
@@ -23,3 +28,4 @@ sig
     ('worker_response -> unit) ->
     'worker_request -> unit
 end
+*)
