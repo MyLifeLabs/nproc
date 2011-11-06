@@ -121,7 +121,7 @@ struct
     pull ()
 
   (* --master-- *)
-  let create nproc central_service worker_data =
+  let create_gen (in_stream, push) nproc central_service worker_data =
     let proc_pool = Array.make nproc None in
     Array.iteri (
       fun i _ ->
@@ -159,7 +159,6 @@ struct
       Array.to_list
         (Array.map (function Some x -> x | None -> assert false) proc_pool)
     in
-    let in_stream, push = Lwt_stream.create () in
     let jobs =
       Lwt.join 
         (List.map
@@ -198,10 +197,13 @@ struct
     in
     p, jobs
 
+  let create nproc central_service worker_data =
+    create_gen (Lwt_stream.create ()) nproc central_service worker_data
+
   let close p =
     p.close ()
 
-  let submit p f x =
+  let submit p ~f x =
     if !(p.closed) then
       Lwt.fail (Failure
                   ("Cannot submit task to process pool because it is closed"))
@@ -210,6 +212,32 @@ struct
       let handle_result y = Lwt.wakeup wakener y in
       p.push (Some (Obj.magic f, Obj.magic x, Obj.magic handle_result));
       waiter
+
+  let stream_pop x =
+    let o = Stream.peek x in
+    (match o with
+         None -> ()
+       | Some _ -> Stream.junk x
+    );
+    o
+      
+  let lwt_of_stream f g strm =
+    Lwt_stream.from (
+      fun () ->
+        let elt =
+          match stream_pop strm with
+              None -> None
+            | Some x -> Some (Obj.magic f, Obj.magic x, Obj.magic g)
+        in
+        Lwt.return elt
+    )
+
+  let iter_stream ~nproc ~serv ~env ~f ~g in_stream =
+    let task_stream = lwt_of_stream f g in_stream in
+    let p, t =
+      create_gen (task_stream, (fun _ -> assert false)) 100 serv env
+    in
+    Lwt_main.run t
 end
 
 
@@ -220,5 +248,14 @@ let create n =
 
 let close = Full.close
 
-let submit p f x =
+let submit p ~f x =
   Full.submit p (fun _ _ x -> f x) x
+
+let iter_stream ~nproc ~f ~g strm =
+  Full.iter_stream
+    ~nproc
+    ~env: ()
+    ~serv: (fun () -> Lwt.return ())
+    ~f: (fun serv env x -> f x)
+    ~g
+    strm
