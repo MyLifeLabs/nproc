@@ -1,3 +1,5 @@
+VERSION = 0.5.0
+
 USE_OCAMLFIND = true
 BYTE_ENABLED = true
 OCAMLDEP_MODULES_ENABLED = false
@@ -5,15 +7,31 @@ OCAMLDEP_MODULES_ENABLED = false
 OCAMLPACKS = lwt.unix
 OCAMLFLAGS = -annot -g
 
-FILES[] =
- nproc
+FILES = nproc
 
 MLI = $(addsuffix .mli, $(FILES))
 
 OCamlLibrary(nproc, $(FILES))
 OCamlProgram(test_nproc, $(FILES) test_nproc)
 
-.DEFAULT: nproc.cma nproc.cmxa test_nproc.opt
+.DEFAULT: META nproc.cma nproc.cmxa test_nproc.opt
+
+META: META.in OMakefile
+	echo 'version = "$(VERSION)"' > META
+	cat META.in >> META
+
+.PHONY: test
+test: test_nproc.opt
+	./test_nproc.opt
+
+.PHONY: install uninstall
+install:
+	ocamlfind install nproc META nproc.mli nproc.cmi \
+          nproc.cmo nproc.cma \
+          nproc.cmx nproc.o nproc.cmxa nproc.a
+uninstall:
+	ocamlfind remove nproc
+
 
 .PHONY: doc
 doc: doc/index.html
@@ -22,4 +40,4 @@ doc/index.html: $(MLI)
 
 .PHONY: clean
 clean:
-        rm -f *.o *.a *.cm* *~ *.annot *.run *.opt doc/*
+        rm -f *.o *.a *.cm* *~ *.annot *.run *.opt test_nproc META doc/*

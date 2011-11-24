@@ -1,0 +1,4 @@
+description = "Process pool"
+requires = "lwt.unix"
+archive(byte) = "nproc.cma"
+archive(native) = "nproc.cmxa"
