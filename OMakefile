@@ -8,11 +8,18 @@ OCAMLFLAGS = -annot -g
 FILES[] =
  nproc
 
+MLI = $(addsuffix .mli, $(FILES))
+
 OCamlLibrary(nproc, $(FILES))
 OCamlProgram(test_nproc, $(FILES) test_nproc)
 
 .DEFAULT: nproc.cma nproc.cmxa test_nproc.opt
 
+.PHONY: doc
+doc: doc/index.html
+doc/index.html: $(MLI)
+	ocamlfind ocamldoc -d doc -html $(MLI) -package $(OCAMLPACKS)
+
 .PHONY: clean
 clean:
-        rm -f *.o *.a *.cm* *~ *.annot *.run *.opt
+        rm -f *.o *.a *.cm* *~ *.annot *.run *.opt doc/*
