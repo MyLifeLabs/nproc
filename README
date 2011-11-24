@@ -3,4 +3,9 @@
                    Process pool implementation for OCaml
 
 A master process creates a pool of N processes. Tasks can be submitted
-as (f, x) and use one of the processes to compute and return (f x).
+asynchronously as a function and its argument (f, x). As soon as one of
+the processes is available, it computes (f x) and returns the result.
+
+This library allows to take advantage of multicore architectures
+by message-passing and without blocking. Its implementation relies
+on fork, pipes, Marshal and Lwt (http://ocsigen.org/lwt/manual/).
