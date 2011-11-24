@@ -36,6 +36,7 @@ uninstall:
 .PHONY: doc
 doc: doc/index.html
 doc/index.html: $(MLI)
+	mkdir -p doc
 	ocamlfind ocamldoc -d doc -html $(MLI) -package $(OCAMLPACKS)
 
 .PHONY: clean
