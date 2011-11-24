@@ -1,5 +1,14 @@
 (** Process pools *)
 
+(**
+   A process pool is a fixed set of processes that perform 
+   arbitrary computations for a master process, in parallel
+   and without blocking the master.
+
+   Master and workers communicate by message-passing. The implementation
+   relies on fork, pipes, Marshal and {{:http://ocsigen.org/lwt/manual/}Lwt}.
+*)
+
 (*
   Implementation status: works, but not used intensively yet.
   Performance has not been seriously benchmarked nor optimized.
