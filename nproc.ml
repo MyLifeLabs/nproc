@@ -235,7 +235,7 @@ struct
   let iter_stream ~nproc ~serv ~env ~f ~g in_stream =
     let task_stream = lwt_of_stream f g in_stream in
     let p, t =
-      create_gen (task_stream, (fun _ -> assert false)) 100 serv env
+      create_gen (task_stream, (fun _ -> assert false)) nproc serv env
     in
     Lwt_main.run t
 end
