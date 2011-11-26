@@ -39,6 +39,7 @@ val submit : t -> f: ('a -> 'b) -> 'a -> 'b Lwt.t
   *)
 
 val iter_stream :
+  ?granularity: int ->
   nproc: int ->
   f: ('a -> 'b) ->
   g: ('b -> unit) ->
@@ -134,6 +135,7 @@ sig
     *)
 
   val iter_stream :
+    ?granularity: int ->
     nproc: int ->
     serv: ('serv_request -> 'serv_response Lwt.t) ->
     env: 'env ->

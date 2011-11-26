@@ -4,6 +4,25 @@ let log_error = ref (fun s -> eprintf "[err] %s\n%!" s)
 let log_info = ref (fun s -> eprintf "[info] %s\n%!" s)
 let string_of_exn = ref Printexc.to_string
 
+(* Get the n first elements of the stream as a reversed list. *)
+let rec npop acc n strm =
+  if n > 0 then
+    match Stream.peek strm with
+        None -> acc
+      | Some x ->
+          Stream.junk strm;
+          npop (x :: acc) (n-1) strm
+  else
+    acc
+
+(* Chunkify stream; each chunk is in reverse order. *)
+let chunkify n strm =
+  Stream.from (
+    fun _ ->
+      match npop [] n strm with
+          [] -> None
+        | l -> Some l
+  )
 
 module Full =
 struct
@@ -54,7 +73,16 @@ struct
       let result =
         try
           match Marshal.from_channel ic with
-              Worker_req (f, x) -> f central_service worker_data x
+              Worker_req (f, x) ->
+                (try f central_service worker_data x
+                 with e ->
+                   let msg =
+                     sprintf "Exception raised by Nproc task: %s"
+                       (!string_of_exn e)
+                   in
+                   !log_error msg;
+                   exit 1
+                )
             | Central_res _ -> assert false
         with
             End_of_file ->
@@ -103,12 +131,37 @@ struct
                 (read_from_worker g)
       )
     and read_from_worker g () =
-      Lwt.bind (Lwt_io.read_value ic) (handle_input g)
+      Lwt.try_bind
+        (fun () -> Lwt_io.read_value ic)
+        (handle_input g)
+        (fun e ->
+           let msg =
+             match e with
+                 End_of_file ->
+                   "Task failed (see error log)"
+               | e ->
+                   sprintf "Cannot read from Nproc worker: exception %s"
+                     (!string_of_exn e)
+           in
+           !log_error msg;
+           failwith msg
+        )
         
     and handle_input g = function
         Worker_res result ->
-          g result;
+          (try
+             g result
+           with e ->
+           let msg =
+             sprintf "Error while handling result of Nproc task: \
+                      exception %s"
+               (!string_of_exn e)
+           in
+           !log_error msg;
+           failwith msg
+          );
           pull ()
+
       | Central_req x ->
           Lwt.bind (central_service x) (
             fun y ->
@@ -232,12 +285,28 @@ struct
         Lwt.return elt
     )
 
-  let iter_stream ~nproc ~serv ~env ~f ~g in_stream =
-    let task_stream = lwt_of_stream f g in_stream in
-    let p, t =
-      create_gen (task_stream, (fun _ -> assert false)) nproc serv env
-    in
-    Lwt_main.run t
+  let iter_stream
+      ?(granularity = 1)
+      ~nproc ~serv ~env ~f ~g in_stream =
+
+    if granularity <= 0 then
+      invalid_arg (sprintf "Nproc.iter_stream: granularity=%i" granularity)
+    else
+      let task_stream =
+        if granularity = 1 then
+          lwt_of_stream f g in_stream
+        else
+          let in_stream' = chunkify granularity in_stream in
+          let f' central_service worker_data l =
+            List.rev_map (f central_service worker_data) l
+          in
+          let g' l = List.iter g l in
+          lwt_of_stream f' g' in_stream'
+      in
+      let p, t =
+        create_gen (task_stream, (fun _ -> assert false)) nproc serv env
+      in
+      Lwt_main.run t
 end
 
 
@@ -251,8 +320,9 @@ let close = Full.close
 let submit p ~f x =
   Full.submit p (fun _ _ x -> f x) x
 
-let iter_stream ~nproc ~f ~g strm =
+let iter_stream ?granularity ~nproc ~f ~g strm =
   Full.iter_stream
+    ?granularity
     ~nproc
     ~env: ()
     ~serv: (fun () -> Lwt.return ())
