@@ -4,6 +4,20 @@ let log_error = ref (fun s -> eprintf "[err] %s\n%!" s)
 let log_info = ref (fun s -> eprintf "[info] %s\n%!" s)
 let string_of_exn = ref Printexc.to_string
 
+let report_error msg =
+  try !log_error msg
+  with e ->
+    eprintf "%s\n" msg;
+    eprintf "*** Critical error *** Error logger raised an exception:\n%s\n%!"
+      (Printexc.to_string e)
+
+let report_info msg =
+  try !log_info msg
+  with e ->
+    eprintf "%s\n" msg;
+    eprintf "*** Critical error *** Info logger raised an exception:\n%s\n%!"
+      (Printexc.to_string e)
+
 (* Get the n first elements of the stream as a reversed list. *)
 let rec npop acc n strm =
   if n > 0 then
@@ -35,6 +49,7 @@ struct
   type ('b, 'c) from_worker =
       Worker_res of 'b
     | Central_req of 'c
+    | Worker_error of string
 
   type ('a, 'b, 'c, 'd, 'e) to_worker =
       Worker_req of (('c -> 'd) -> 'e -> 'a -> 'b) * 'a
@@ -58,6 +73,15 @@ struct
             a.(i) <- None
     done
 
+  (* Exception raised by f *)
+  let user_error1 e =
+    sprintf "Exception raised by Nproc task: %s" (!string_of_exn e)
+      
+  (* Exception raised by g *)
+  let user_error2 e =
+    sprintf "Error while handling result of Nproc task: exception %s"
+      (!string_of_exn e)
+
   (* --worker-- *)
   let start_worker_loop worker_data fd_in fd_out =
     let ic = Unix.in_channel_of_descr fd_in in
@@ -74,22 +98,20 @@ struct
         try
           match Marshal.from_channel ic with
               Worker_req (f, x) ->
-                (try f central_service worker_data x
-                 with e ->
-                   let msg =
-                     sprintf "Exception raised by Nproc task: %s"
-                       (!string_of_exn e)
-                   in
-                   !log_error msg;
-                   exit 1
+                (try Worker_res (f central_service worker_data x)
+                 with e -> Worker_error (user_error1 e)
                 )
             | Central_res _ -> assert false
         with
-            End_of_file ->
-              exit 0
+            End_of_file -> exit 0
+          | e ->
+              let msg =
+                sprintf "Internal error in Nproc worker: %s" (!string_of_exn e)
+              in
+              Worker_error msg
       in
       try
-        Marshal.to_channel oc (Worker_res result) [Marshal.Closures];
+        Marshal.to_channel oc result [Marshal.Closures];
         flush oc
       with Sys_error "Broken pipe" ->
         exit 0
@@ -105,17 +127,22 @@ struct
 
   type ('a, 'b, 'c) t = {
     stream :
-      ((('a -> 'b) -> 'c -> in_t -> out_t) * in_t * (out_t -> unit))
+      ((('a -> 'b) -> 'c -> in_t -> out_t)
+       * in_t
+       * (out_t option -> unit))
          Lwt_stream.t;
     push :
-      (((('a -> 'b) -> 'c -> in_t -> out_t) * in_t * (out_t -> unit))
+      (((('a -> 'b) -> 'c -> in_t -> out_t)
+        * in_t
+        * (out_t option -> unit))
          option -> unit);
+    kill_workers : unit -> unit;
     close : unit -> unit Lwt.t;
     closed : bool ref;
   }
 
   (* --master-- *)
-  let pull_task in_stream central_service worker =
+  let pull_task kill_workers in_stream central_service worker =
     (* Note: input and output file descriptors are automatically closed 
        when the end of the lwt channel is reached. *)
     let ic = Lwt_io.of_fd ~mode:Lwt_io.input worker.worker_in in
@@ -136,29 +163,20 @@ struct
         (handle_input g)
         (fun e ->
            let msg =
-             match e with
-                 End_of_file ->
-                   "Task failed (see error log)"
-               | e ->
-                   sprintf "Cannot read from Nproc worker: exception %s"
-                     (!string_of_exn e)
+             sprintf "Cannot read from Nproc worker: exception %s"
+               (!string_of_exn e)
            in
-           !log_error msg;
-           failwith msg
+           report_error msg;
+           kill_workers ();
+           exit 1
         )
         
     and handle_input g = function
         Worker_res result ->
           (try
-             g result
+             g (Some result)
            with e ->
-           let msg =
-             sprintf "Error while handling result of Nproc task: \
-                      exception %s"
-               (!string_of_exn e)
-           in
-           !log_error msg;
-           failwith msg
+             report_error (user_error2 e)
           );
           pull ()
 
@@ -170,6 +188,16 @@ struct
                 (write_value oc res)
                 (read_from_worker g)
           )
+
+      | Worker_error msg ->
+          report_error msg;
+          (try
+             g None
+           with e ->
+             report_error (user_error2 e)
+          );
+          pull ()
+
     in
     pull ()
 
@@ -188,8 +216,9 @@ struct
                  cleanup_proc_pool proc_pool;
                  start_worker_loop worker_data out_read in_write;
                with e ->
-                 !log_error (sprintf "Uncaught exception in worker (pid %i): %s"
-                               (Unix.getpid ()) (!string_of_exn e));
+                 !log_error
+                   (sprintf "Uncaught exception in worker (pid %i): %s"
+                      (Unix.getpid ()) (!string_of_exn e));
                  exit 1
               )
           | child_pid ->
@@ -212,21 +241,28 @@ struct
       Array.to_list
         (Array.map (function Some x -> x | None -> assert false) proc_pool)
     in
-    let jobs =
-      Lwt.join 
-        (List.map
-           (pull_task in_stream central_service)
-           worker_info)
-    in
 
-    let terminate () =
+    let kill_workers () =
       Array.iter (
         function
             None -> ()
           | Some x ->
               (try close_worker x with _ -> ());
-              (try Unix.kill x.worker_pid Sys.sigkill with _ -> ())
+              (try
+                 Unix.kill x.worker_pid Sys.sigkill;
+                 ignore (Unix.waitpid [] x.worker_pid)
+               with e ->
+                 !log_error
+                   (sprintf "kill worker %i: %s"
+                      x.worker_pid (!string_of_exn e)))
       ) proc_pool
+    in
+
+    let jobs =
+      Lwt.join 
+        (List.map
+           (pull_task kill_workers in_stream central_service)
+           worker_info)
     in
 
     let closed = ref false in
@@ -235,7 +271,7 @@ struct
       if not !closed then (
         push None;
         closed := true;
-        Lwt.bind jobs (fun () -> Lwt.return (terminate ()))
+        Lwt.bind jobs (fun () -> Lwt.return (kill_workers ()))
       )
       else
         Lwt.return ()
@@ -244,6 +280,7 @@ struct
     let p = {
       stream = in_stream;
       push = push;
+      kill_workers = kill_workers;
       close = close_stream;
       closed = closed;
     }
@@ -263,7 +300,8 @@ struct
     else
       let waiter, wakener = Lwt.task () in
       let handle_result y = Lwt.wakeup wakener y in
-      p.push (Some (Obj.magic f, Obj.magic x, Obj.magic handle_result));
+      p.push 
+        (Some (Obj.magic f, Obj.magic x, Obj.magic handle_result));
       waiter
 
   let stream_pop x =
@@ -285,6 +323,8 @@ struct
         Lwt.return elt
     )
 
+  type 'a result_or_error = Result of 'a | Error of string 
+
   let iter_stream
       ?(granularity = 1)
       ~nproc ~serv ~env ~f ~g in_stream =
@@ -298,15 +338,47 @@ struct
         else
           let in_stream' = chunkify granularity in_stream in
           let f' central_service worker_data l =
-            List.rev_map (f central_service worker_data) l
+            List.rev_map (
+              fun x ->
+                try Result (f central_service worker_data x)
+                with e -> Error (user_error1 e)
+            ) l
           in
-          let g' l = List.iter g l in
+          let g' = function
+              None ->
+                report_error "Nproc error: missing result due to an internal \
+                              error in Nproc or due to a killed worker process"
+            | Some l ->
+                List.iter (
+                  function
+                      Result y ->
+                        (try
+                           g (Some y)
+                         with e ->
+                           report_error (user_error2 e)
+                        )
+                    | Error s ->
+                        report_error s;
+                        (try
+                           g None
+                         with e ->
+                           report_error (user_error2 e)
+                        )
+                ) l
+          in
           lwt_of_stream f' g' in_stream'
       in
       let p, t =
-        create_gen (task_stream, (fun _ -> assert false)) nproc serv env
+        create_gen (task_stream,
+                    (fun _ -> assert false) (* push *))
+          nproc serv env
       in
-      Lwt_main.run t
+      try
+        Lwt_main.run t;
+        p.kill_workers ();
+      with e ->
+        p.kill_workers ();
+        raise e
 end
 
 
@@ -318,7 +390,7 @@ let create n =
 let close = Full.close
 
 let submit p ~f x =
-  Full.submit p (fun _ _ x -> f x) x
+  Full.submit p ~f: (fun _ _ x -> f x) x
 
 let iter_stream ?granularity ~nproc ~f ~g strm =
   Full.iter_stream

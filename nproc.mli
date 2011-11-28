@@ -7,11 +7,32 @@
 
    Master and workers communicate by message-passing. The implementation
    relies on fork, pipes, Marshal and {{:http://ocsigen.org/lwt/manual/}Lwt}.
+
+   Error handling:
+   - Functions passed by the user to Nproc should not raise exceptions.
+   - Exceptions raised accidentally by user-given functions
+     either in the master or in the workers are logged but not propagated
+     as exceptions. The result of the call uses the [option] type
+     and [None] indicates that an exception was caught.
+   - Exceptions due to bugs in Nproc hopefully won't occur often 
+     but if they do they will be handled just like user exceptions.
+   - Fatal errors occurring in workers result in the
+     termination of the master and all the workers. Such errors include
+     segmentation faults, sigkills sent by other processes,
+     explicit calls to the exit function, etc.
+
+   Logging:
+   - Nproc logs error messages as well as informative messages
+     that it judges useful and affordable in terms of performance.
+   - The printing functions [log_error] and [log_info]
+     can be redefined to take advantage of a particular logging system.
+   - No logging takes place in the worker processes.
+   - Only the function that converts exceptions into strings [string_of_exn]
+     may be called in both master and workers.
 *)
 
 (*
   Implementation status: works, but not used intensively yet.
-  Performance has not been seriously benchmarked nor optimized.
 *)
 
 type t
@@ -28,7 +49,8 @@ val close : t -> unit Lwt.t
   (** Close a process pool.
       It waits for all submitted tasks to finish. *)
 
-val submit : t -> f: ('a -> 'b) -> 'a -> 'b Lwt.t
+val submit :
+  t -> f: ('a -> 'b) -> 'a -> 'b option Lwt.t
   (** Submit a task.
       [submit ppool ~f x] passes [f] and [x] to one of the worker processes,
       which computes [f x] and passes the result back to the master process,
@@ -42,7 +64,7 @@ val iter_stream :
   ?granularity: int ->
   nproc: int ->
   f: ('a -> 'b) ->
-  g: ('b -> unit) ->
+  g: ('b option -> unit) ->
   'a Stream.t -> unit
   (**
      Iterate over a stream using a pool of 
@@ -60,6 +82,14 @@ val iter_stream :
      [f] is serialized as many times as there are elements in the stream.
      If [f] relies on a large immutable data structure, we recommend
      using the [env] option of [Full.iter_stream].
+
+     @param granularity allows to improve the performance of short-lived
+                        tasks by grouping multiple tasks internally into 
+                        a single task.
+                        This reduces the overhead of the underlying
+                        message-passing system but makes the tasks
+                        sequential within each group.
+                        The default [granularity] is 1.
   *)
 
 val log_error : (string -> unit) ref
@@ -123,7 +153,7 @@ sig
   val submit :
     ('serv_request, 'serv_response, 'env) t ->
     f: (('serv_request -> 'serv_response) -> 'env -> 'a -> 'b) ->
-    'a -> 'b Lwt.t
+    'a -> 'b option Lwt.t
     (** Submit a task.
         [submit ppool ~f x] passes [f] and [x] to one of the worker processes,
         which computes [f service env x] and passes the result back
@@ -140,7 +170,7 @@ sig
     serv: ('serv_request -> 'serv_response Lwt.t) ->
     env: 'env ->
     f: (('serv_request -> 'serv_response) -> 'env -> 'a -> 'b) ->
-    g: ('b -> unit) ->
+    g: ('b option -> unit) ->
     'a Stream.t -> unit
     (**
        Iterate over a stream using a pool of 
