@@ -31,10 +31,6 @@
      may be called in both master and workers.
 *)
 
-(*
-  Implementation status: works, but not used intensively yet.
-*)
-
 type t
   (** Type of a process pool *)
 
