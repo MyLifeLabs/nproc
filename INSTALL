@@ -1,0 +1,15 @@
+Building Nproc requires the following tools:
+
+- Make (command: make)
+- OCaml (command: ocamlc, ocamlopt)
+- Findlib (command: ocamlfind)
+- Lwt (check: ocamlfind list | grep lwt)
+
+Installation:
+
+  $ make
+  $ make install
+
+Uninstallation:
+
+  $ make uninstall

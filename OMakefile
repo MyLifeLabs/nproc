@@ -1,5 +1,3 @@
-VERSION = 0.5.0
-
 USE_OCAMLFIND = true
 BYTE_ENABLED = true
 OCAMLDEP_MODULES_ENABLED = false
@@ -16,8 +14,8 @@ OCamlProgram(test_nproc, $(FILES) test_nproc)
 
 .DEFAULT: META nproc.cma nproc.cmxa test_nproc.opt
 
-META: META.in OMakefile
-	echo 'version = "$(VERSION)"' > META
+META: META.in VERSION
+	echo "version = \"$$(cat VERSION)\"" > META
 	cat META.in >> META
 
 .PHONY: test
@@ -38,6 +36,11 @@ doc: doc/index.html
 doc/index.html: $(MLI)
 	mkdir -p doc
 	ocamlfind ocamldoc -d doc -html $(MLI) -package $(OCAMLPACKS)
+
+.PHONY: install-doc
+install-doc: doc
+	cd ../mylifelabs.github.com && mkdir -p nproc
+	cp doc/* ../mylifelabs.github.com/nproc
 
 .PHONY: clean
 clean:

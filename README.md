@@ -24,6 +24,8 @@ Performance status:
   Throughput was 50K records per second, using a granularity of 100
   records per task.
 
-
 Do not hesitate to submit experience reports, either good or bad,
-and interface suggestions before it is too late.
+and [interface]{http://mylifelabs.github.com/nproc/Nproc.html}
+suggestions before it is too late.
+
+[Documentation]{http://mylifelabs.github.com/nproc/Nproc.html}
