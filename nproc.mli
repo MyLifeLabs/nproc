@@ -35,15 +35,21 @@ type t
   (** Type of a process pool *)
 
 val create : int -> t * unit Lwt.t
-  (** Create a process pool.
+  (** Create a process pool. This function must be called before 
+      running the event loop with [Lwt_main.run].
+
       [create nproc] returns [(ppool, lwt)] where
-      [ppool] is pool of [nproc] processes and [lwt] is a lightweight thread
+      [ppool] is a pool of [nproc] processes and [lwt] is a lightweight thread
       that finishes when the pool is closed.
   *)
 
 val close : t -> unit Lwt.t
   (** Close a process pool.
       It waits for all submitted tasks to finish. *)
+
+val terminate : t -> unit
+  (** Terminate the processes of a pool without waiting for the pending
+      tasks to complete. *)
 
 val submit :
   t -> f: ('a -> 'b) -> 'a -> 'b option Lwt.t
@@ -145,6 +151,11 @@ sig
     ('serv_request, 'serv_response, 'env) t -> unit Lwt.t
     (** Close a process pool.
         It waits for all submitted tasks to finish. *)
+
+  val terminate :
+    ('serv_request, 'serv_response, 'env) t -> unit
+    (** Terminate the processes of a pool without waiting for the pending
+        tasks to complete. *)
 
   val submit :
     ('serv_request, 'serv_response, 'env) t ->

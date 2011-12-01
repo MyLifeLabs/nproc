@@ -293,6 +293,10 @@ struct
   let close p =
     p.close ()
 
+  let terminate p =
+    p.closed := true;
+    p.kill_workers ()
+
   let submit p ~f x =
     if !(p.closed) then
       Lwt.fail (Failure
@@ -388,6 +392,8 @@ let create n =
   Full.create n (fun () -> Lwt.return ()) ()
 
 let close = Full.close
+
+let terminate = Full.terminate
 
 let submit p ~f x =
   Full.submit p ~f: (fun _ _ x -> f x) x
