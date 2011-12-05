@@ -94,6 +94,52 @@ let test_stream_interface () =
 let test_stream_interface_g10 () =
   assert (timed 9.99 10.20 (test_stream_interface_gen 10))
 
+let make_list len x =
+  let rec loop acc len x =
+    if len > 0 then loop (x :: acc) (len - 1) x
+    else acc
+  in
+  loop [] len x
+
+let get_live_words () =
+  (Gc.stat ()).Gc.live_words
+
+let print_live_words () =
+  printf "live_words: %i\n%!" (get_live_words ())
+
+let test_unstack () =
+  try
+    let in_list = [1;2;3;4] in
+    let out_list = ref [] in
+    let strm = Stream.of_list in_list in
+    let x = make_list 1_000_000 0 in
+    printf "GC stats in parent:\n";
+    print_live_words ();
+    assert (get_live_words () > 2_000_000);
+
+    printf "GC stats in children:\n%!";
+    Nproc.iter_stream
+      ~init: (fun x -> raise (Nproc.Start_worker x))
+      ~nproc:2
+      ~f: (fun x ->
+             Gc.compact ();
+             print_live_words ();
+             assert (get_live_words () < 100_000);
+             x
+          )
+      ~g: (function
+               Some x -> out_list := x :: !out_list
+             | None -> assert false)
+      strm;
+    
+    assert (get_live_words () > 2_000_000);
+    ignore (List.hd x);
+    assert (List.sort compare !out_list = List.sort compare in_list);
+
+  with Nproc.Start_worker x ->
+    printf "Starting worker %i\n%!" x.Nproc.worker_id;
+    x.Nproc.worker_loop ()
+
 let run name f =
   printf "[%s]\n%!" name;
   f ();
@@ -101,12 +147,16 @@ let run name f =
 
 let tests =
   [
-    ("exception in f", exception_in_f);
-    ("exception in g", exception_in_g);
-    (*("fatal exit in f", fatal_exit_in_f);*)
-    ("lwt interface", test_lwt_interface);
-    ("stream interface", test_stream_interface);
-    ("stream interface with granularity=10", test_stream_interface_g10);
+    (* shorter tests *)
+    "exception in f", exception_in_f;
+    "exception in g", exception_in_g;
+    "unstack child", test_unstack;
+
+    (* longer tests *)
+    "lwt interface", test_lwt_interface;
+    "stream interface", test_stream_interface;
+    "stream interface with granularity=10", test_stream_interface_g10;
+    (*"fatal exit in f", fatal_exit_in_f;*)
   ]
 
 let main () = List.iter (fun (name, f) -> run name f) tests

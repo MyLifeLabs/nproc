@@ -1,5 +1,12 @@
 open Printf
 
+type worker_info = {
+  worker_id : int;
+  worker_loop : 'a. unit -> 'a;
+}
+
+exception Start_worker of worker_info
+
 let log_error = ref (fun s -> eprintf "[err] %s\n%!" s)
 let log_info = ref (fun s -> eprintf "[info] %s\n%!" s)
 let string_of_exn = ref Printexc.to_string
@@ -115,7 +122,8 @@ struct
         flush oc
       with Sys_error "Broken pipe" ->
         exit 0
-    done
+    done;
+    assert false
 
   let write_value oc x =
     Lwt.bind
@@ -202,7 +210,7 @@ struct
     pull ()
 
   (* --master-- *)
-  let create_gen (in_stream, push) nproc central_service worker_data =
+  let create_gen init (in_stream, push) nproc central_service worker_data =
     let proc_pool = Array.make nproc None in
     Array.iteri (
       fun i _ ->
@@ -214,12 +222,20 @@ struct
                  Unix.close (Lwt_unix.unix_file_descr in_read);
                  Unix.close (Lwt_unix.unix_file_descr out_write);
                  cleanup_proc_pool proc_pool;
-                 start_worker_loop worker_data out_read in_write;
+                 let start () =
+                   start_worker_loop worker_data out_read in_write
+                 in
+                 init { worker_id = i; worker_loop = start };
+                 start ()
+
                with e ->
-                 !log_error
-                   (sprintf "Uncaught exception in worker (pid %i): %s"
-                      (Unix.getpid ()) (!string_of_exn e));
-                 exit 1
+                 match e with
+                     Start_worker start -> raise e
+                   | _ ->
+                       !log_error
+                         (sprintf "Uncaught exception in worker (pid %i): %s"
+                            (Unix.getpid ()) (!string_of_exn e));
+                       exit 1
               )
           | child_pid ->
               Unix.close in_write;
@@ -287,8 +303,10 @@ struct
     in
     p, jobs
 
-  let create nproc central_service worker_data =
-    create_gen (Lwt_stream.create ()) nproc central_service worker_data
+  let default_init worker_info = ()
+
+  let create ?(init = default_init) nproc central_service worker_data =
+    create_gen init (Lwt_stream.create ()) nproc central_service worker_data
 
   let close p =
     p.close ()
@@ -331,6 +349,7 @@ struct
 
   let iter_stream
       ?(granularity = 1)
+      ?(init = default_init)
       ~nproc ~serv ~env ~f ~g in_stream =
 
     if granularity <= 0 then
@@ -373,8 +392,9 @@ struct
           lwt_of_stream f' g' in_stream'
       in
       let p, t =
-        create_gen (task_stream,
-                    (fun _ -> assert false) (* push *))
+        create_gen init 
+          (task_stream,
+           (fun _ -> assert false) (* push *))
           nproc serv env
       in
       try
@@ -388,8 +408,8 @@ end
 
 type t = (unit, unit, unit) Full.t
 
-let create n =
-  Full.create n (fun () -> Lwt.return ()) ()
+let create ?init n =
+  Full.create ?init n (fun () -> Lwt.return ()) ()
 
 let close = Full.close
 
@@ -398,9 +418,10 @@ let terminate = Full.terminate
 let submit p ~f x =
   Full.submit p ~f: (fun _ _ x -> f x) x
 
-let iter_stream ?granularity ~nproc ~f ~g strm =
+let iter_stream ?granularity ?init ~nproc ~f ~g strm =
   Full.iter_stream
     ?granularity
+    ?init
     ~nproc
     ~env: ()
     ~serv: (fun () -> Lwt.return ())

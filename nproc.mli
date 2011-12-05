@@ -34,13 +34,48 @@
 type t
   (** Type of a process pool *)
 
-val create : int -> t * unit Lwt.t
-  (** Create a process pool. This function must be called before 
-      running the event loop with [Lwt_main.run].
+type worker_info = private {
+  worker_id : int;
+    (** Worker identifier ranging between 0 and (number of workers - 1). *)
+
+  worker_loop : 'a. unit -> 'a;
+    (** Function that starts the worker's infinite loop. *)
+}
+
+exception Start_worker of worker_info
+  (** This is the only exception that may be raised by the user from within
+      the [init] function passed as an option to {!Nproc.create}.
+      In this case it is the user's responsibility to catch the exception
+      and to start the worker loop.
+
+      The purpose of this exception is to allow the user to clear
+      the call stack in the child processes, allowing
+      the garbage collector to free up heap-allocated memory that
+      would otherwise be wasted.
+  *)
+
+val create :
+  ?init: (worker_info -> unit) ->
+  int -> t * unit Lwt.t
+  (** Create a process pool.
 
       [create nproc] returns [(ppool, lwt)] where
       [ppool] is a pool of [nproc] processes and [lwt] is a lightweight thread
       that finishes when the pool is closed.
+
+      @param init initialization function called at the beginning of
+                  of each worker process. By default it does nothing.
+                  Specifying a custom [init] function allows to perform
+                  some initial cleanup of resources
+                  inherited from the parent (master),
+                  such as closing files or connections. It may also 
+                  raise the {!Nproc.Start_worker} exception as a means
+                  of clearing the call stack inherited from the parent,
+                  enabling the garbage collection of some useless data.
+                  If this [Start_worker] mechanism is used,
+                  the [worker_loop] function from the {!Nproc.worker_info}
+                  record needs to be called explicitly after catching
+                  the exception.
   *)
 
 val close : t -> unit Lwt.t
@@ -64,6 +99,7 @@ val submit :
 
 val iter_stream :
   ?granularity: int ->
+  ?init: (worker_info -> unit) ->
   nproc: int ->
   f: ('a -> 'b) ->
   g: ('b option -> unit) ->
@@ -92,6 +128,8 @@ val iter_stream :
                         message-passing system but makes the tasks
                         sequential within each group.
                         The default [granularity] is 1.
+
+     @param init see {!Nproc.create}.
   *)
 
 val log_error : (string -> unit) ref
@@ -131,6 +169,7 @@ sig
     *)
 
   val create :
+    ?init: (worker_info -> unit) ->
     int ->
     ('serv_request -> 'serv_response Lwt.t) ->
     'env ->
@@ -145,6 +184,8 @@ sig
 
           [env] is arbitrary environment data, typically large, that
           is passed to the workers just once during their initialization.
+
+          @param init see {!Nproc.create}.
       *)
 
   val close :
@@ -173,6 +214,7 @@ sig
 
   val iter_stream :
     ?granularity: int ->
+    ?init: (worker_info -> unit) ->
     nproc: int ->
     serv: ('serv_request -> 'serv_response Lwt.t) ->
     env: 'env ->
@@ -196,6 +238,8 @@ sig
        If [f] relies on a large immutable data structure, it should be
        putting into [env] in order to avoid costly and
        repetitive serialization of that data.
+
+       @param init see {!Nproc.create}.
     *)
 
 end
