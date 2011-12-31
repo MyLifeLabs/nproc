@@ -149,6 +149,10 @@ struct
     closed : bool ref;
   }
 
+  let rec waitpid pid =
+    try Unix.waitpid [] pid
+    with Unix.Unix_error (Unix.EINTR, _, _) -> waitpid pid
+
   (* --master-- *)
   let pull_task kill_workers in_stream central_service worker =
     (* Note: input and output file descriptors are automatically closed 
@@ -266,7 +270,7 @@ struct
               (try close_worker x with _ -> ());
               (try
                  Unix.kill x.worker_pid Sys.sigkill;
-                 ignore (Unix.waitpid [] x.worker_pid)
+                 ignore (waitpid x.worker_pid)
                with e ->
                  !log_error
                    (sprintf "kill worker %i: %s"
