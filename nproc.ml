@@ -153,6 +153,8 @@ struct
     try Unix.waitpid [] pid
     with Unix.Unix_error (Unix.EINTR, _, _) -> waitpid pid
 
+  let mutex = Lwt_mutex.create ()
+
   (* --master-- *)
   let pull_task kill_workers in_stream central_service worker =
     (* Note: input and output file descriptors are automatically closed 
@@ -160,14 +162,17 @@ struct
     let ic = Lwt_io.of_fd ~mode:Lwt_io.input worker.worker_in in
     let oc = Lwt_io.of_fd ~mode:Lwt_io.output worker.worker_out in
     let rec pull () =
-      Lwt.bind (Lwt_stream.get in_stream) (
-        function
-            None -> Lwt.return ()
+      Lwt.bind (Lwt_mutex.lock mutex) (fun () ->
+        Lwt.bind (Lwt_stream.get in_stream) (
+          function
+          | None -> Lwt_mutex.unlock mutex ; Lwt.return ()
           | Some (f, x, g) ->
+              Lwt_mutex.unlock mutex ;
               let req = Worker_req (f, x) in
               Lwt.bind
                 (write_value oc req)
                 (read_from_worker g)
+        )
       )
     and read_from_worker g () =
       Lwt.try_bind
