@@ -153,26 +153,21 @@ struct
     try Unix.waitpid [] pid
     with Unix.Unix_error (Unix.EINTR, _, _) -> waitpid pid
 
-  let mutex = Lwt_mutex.create ()
-
   (* --master-- *)
-  let pull_task kill_workers in_stream central_service worker =
+  let pull_task kill_workers in_stream in_stream_mutex central_service worker =
     (* Note: input and output file descriptors are automatically closed 
        when the end of the lwt channel is reached. *)
     let ic = Lwt_io.of_fd ~mode:Lwt_io.input worker.worker_in in
     let oc = Lwt_io.of_fd ~mode:Lwt_io.output worker.worker_out in
     let rec pull () =
-      Lwt.bind (Lwt_mutex.lock mutex) (fun () ->
-        Lwt.bind (Lwt_stream.get in_stream) (
-          function
-          | None -> Lwt_mutex.unlock mutex ; Lwt.return ()
-          | Some (f, x, g) ->
-              Lwt_mutex.unlock mutex ;
-              let req = Worker_req (f, x) in
-              Lwt.bind
-                (write_value oc req)
-                (read_from_worker g)
-        )
+      Lwt.bind (Lwt_mutex.with_lock in_stream_mutex (fun () -> Lwt_stream.get in_stream)) (
+        function
+        | None -> Lwt.return ()
+        | Some (f, x, g) ->
+            let req = Worker_req (f, x) in
+            Lwt.bind
+              (write_value oc req)
+              (read_from_worker g)
       )
     and read_from_worker g () =
       Lwt.try_bind
@@ -219,7 +214,7 @@ struct
     pull ()
 
   (* --master-- *)
-  let create_gen init (in_stream, push) nproc central_service worker_data =
+  let create_gen init ((in_stream, push), in_stream_mutex) nproc central_service worker_data =
     let proc_pool = Array.make nproc None in
     Array.iteri (
       fun i _ ->
@@ -286,7 +281,7 @@ struct
     let jobs =
       Lwt.join 
         (List.map
-           (pull_task kill_workers in_stream central_service)
+           (pull_task kill_workers in_stream in_stream_mutex central_service)
            worker_info)
     in
 
@@ -315,7 +310,7 @@ struct
   let default_init worker_info = ()
 
   let create ?(init = default_init) nproc central_service worker_data =
-    create_gen init (Lwt_stream.create ()) nproc central_service worker_data
+    create_gen init (Lwt_stream.create (), Lwt_mutex.create ()) nproc central_service worker_data
 
   let close p =
     p.close ()
@@ -402,8 +397,9 @@ struct
       in
       let p, t =
         create_gen init 
-          (task_stream,
-           (fun _ -> assert false) (* push *))
+          ((task_stream,
+            (fun _ -> assert false) (* push *)),
+           Lwt_mutex.create ())
           nproc serv env
       in
       try
